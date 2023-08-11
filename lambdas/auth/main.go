@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/skip2/go-qrcode"
@@ -38,6 +39,8 @@ func getWhatsappClient() (*whatsmeow.Client, error) {
 	db_password := os.Getenv("WHATSAPP_DATABASE_PASSWORD")
 
 	if db_host == "" || db_password == "" {
+		log.Println("WHATSAPP_DATABASE_HOST: " + db_host)
+		log.Println("WHATSAPP_DATABASE_PASSWORD: " + db_password)
 		return nil, fmt.Errorf("Environment variables not set")
 	}
 
@@ -48,13 +51,15 @@ func getWhatsappClient() (*whatsmeow.Client, error) {
 	container, container_err := sqlstore.New("postgres", "postgres://"+db_user+":"+db_password+"@"+db_host+":"+db_port, dbLog)
 
 	if container_err != nil {
-		fmt.Println("Error connecting to database")
+		log.Println("Error connecting to database")
+		log.Println(container_err)
 		return nil, container_err
 	}
 
 	deviceStore, device_err := container.GetFirstDevice()
 	if device_err != nil {
-		fmt.Println("Error getting first device")
+		log.Println("Error getting first device")
+		log.Println(device_err)
 		return nil, device_err
 	}
 
@@ -69,15 +74,15 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 	// S3 client
 	s3_client, s3_err := getS3Client()
 	if s3_err != nil {
-		fmt.Println("Got an error retrieving the configuration")
-		fmt.Println(s3_err)
+		log.Println("Got an error retrieving the configuration")
+		log.Println(s3_err)
 		return "", s3_err
 	}
 
 	// Whatsapp client
 	whatsapp_client, whatsapp_err := getWhatsappClient()
 	if whatsapp_err != nil {
-		fmt.Println("Got an error retrieving the whatsapp client")
+		log.Println("Got an error retrieving the whatsapp client")
 		return "", whatsapp_err
 	}
 
@@ -87,22 +92,26 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 		qrChan, _ := whatsapp_client.GetQRChannel(context.Background())
 		connection_err := whatsapp_client.Connect()
 		if connection_err != nil {
-			fmt.Println("Error connecting to whatsapp client")
+			log.Println("Error connecting to whatsapp client")
 			return "", connection_err
 		}
+		defer whatsapp_client.Disconnect()
 
 		for evt := range qrChan {
 			if evt.Event == "code" {
+
+				// Generating new code
+				log.Println("Generating new code")
+
 				// Generate the QR code as png
 				var png []byte
 				png, qr_err := qrcode.Encode(evt.Code, qrcode.Medium, 256)
 				if qr_err != nil {
-					fmt.Println("Error generating QR code")
+					log.Println("Error generating QR code")
 					return "", qr_err
 				}
 
-				// Upload the QR code to S3
-				// Assemble the request with the bucket, key, and image body
+				// Replace the QR code in S3
 				input := &s3.PutObjectInput{
 					Bucket: aws.String("luna-admin-bucket"),
 					Key:    aws.String("WhatsAppQRCode.png"),
@@ -112,27 +121,29 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 				// Send the request
 				_, s3_err := s3_client.PutObject(context.TODO(), input)
 				if s3_err != nil {
-					fmt.Println("Error uploading QR code to S3")
+					log.Println("Error uploading QR code to S3")
 					return "", s3_err
+				} else {
+					log.Println("QR code uploaded to S3")
 				}
 
 			} else {
-				fmt.Println("Login event: " + evt.Event)
+				log.Println("Login event: " + evt.Event)
 				return "", fmt.Errorf("Login event: " + evt.Event)
 			}
 		}
 	} else {
-		// Already logged in, just connect
+		log.Println("Already logged in, attempting to connect")
 		conection_err := whatsapp_client.Connect()
 
 		if conection_err != nil {
-			fmt.Println("Error connecting to whatsapp client")
+			log.Println("Error connecting to whatsapp client")
 			return "", conection_err
 		}
-
+		defer whatsapp_client.Disconnect()
 		return "Already logged in", nil
 	}
-	whatsapp_client.Disconnect()
+
 	return "Success", nil
 }
 
