@@ -129,7 +129,6 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 
 			} else {
 				log.Println("Login event: " + evt.Event)
-				return "", fmt.Errorf("Login event: " + evt.Event)
 			}
 		}
 	} else {
