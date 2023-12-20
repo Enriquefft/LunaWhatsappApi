@@ -17,7 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 )
 
-// No parameters
 type Schedule struct {
 	UserName    string `json:"userName"`
 	UserPhone   string `json:"userPhone"`
@@ -27,6 +26,12 @@ type Schedule struct {
 	StartTime   string `json:"startTime"`
 	EndTime     string `json:"endTime"`
 	WeekDays    []int  `json:"weekDays"`
+}
+
+type Response struct {
+	IsBase64Encoded bool   `json:"isBase64Encoded"`
+	StatusCode      int    `json:"statusCode"`
+	Body            string `json:"body"`
 }
 
 func getSchedulerClient() (*scheduler.Client, error) {
@@ -39,6 +44,10 @@ func getSchedulerClient() (*scheduler.Client, error) {
 }
 
 func formatWeekDays(weekDays []int) string {
+	// aws Scheduler week starts on Sunday
+	weekDays = incrementWeekDays(weekDays)
+
+	log.Println("formatInput: ", weekDays)
 	var builder strings.Builder
 	for i, v := range weekDays {
 		if i != 0 {
@@ -47,7 +56,9 @@ func formatWeekDays(weekDays []int) string {
 		builder.WriteString(strconv.Itoa(v))
 	}
 
-	return builder.String()
+	ans := builder.String()
+	log.Println("Week days: ", ans)
+	return ans
 }
 
 func requiredFields(data *Schedule, extra_required bool) error {
@@ -98,7 +109,10 @@ func validateInput(data *Schedule) error {
 	// Further validation
 
 	// Valid phone number
-	if !regexp.MustCompile(`^[0-9]{9}$`).MatchString(data.UserPhone) {
+	if regexp.MustCompile(`^[0-9]{9}$`).MatchString(data.UserPhone) {
+		data.UserPhone = "51" + data.UserPhone
+	}
+	if !regexp.MustCompile(`^[0-9]{11}$`).MatchString(data.UserPhone) {
 		return fmt.Errorf("Invalid phone number")
 	}
 
@@ -127,13 +141,25 @@ func incrementWeekDays(weekDays []int) []int {
 	return weekDays
 }
 
-func HandleRequest(ctx context.Context, data Schedule) (string, error) {
+func errorResponse(err error) Response {
+	return Response{
+		IsBase64Encoded: false,
+		StatusCode:      400,
+		Body:            err.Error(),
+	}
+}
+
+func HandleRequest(ctx context.Context, data Schedule) (Response, error) {
+	// Debugging
+	log.Println("Received event: ", data)
+	log.Println("Category: ", data.Category)
+
 	// Validate input
 	validate_err := validateInput(&data)
 	if validate_err != nil {
 		log.Println("Got an error validating the input")
 		log.Println(validate_err)
-		return "", validate_err
+		return errorResponse(validate_err), validate_err
 	}
 
 	// Scheduler client
@@ -141,7 +167,7 @@ func HandleRequest(ctx context.Context, data Schedule) (string, error) {
 	if scheduler_err != nil {
 		log.Println("Got an error retrieving the configuration")
 		log.Println(scheduler_err)
-		return "", scheduler_err
+		return errorResponse(scheduler_err), scheduler_err
 	}
 
 	// Dont need to send the category or the week days
@@ -151,39 +177,42 @@ func HandleRequest(ctx context.Context, data Schedule) (string, error) {
 		EventName:   data.EventName,
 		Description: data.Description,
 		StartTime:   data.StartTime,
+		EndTime:     data.EndTime,
 	}
 
 	// If category is "sleep", create two schedules
 	if data.Category == "sleep" {
 		// Create first schedule at start time
-		err := createSchedule(ctx, scheduler_client, dataPayload, data.StartTime, "sleep")
+		err := createSchedule(ctx, scheduler_client, dataPayload, data.WeekDays, data.StartTime, "sleep")
 		if err != nil {
-			return "", err
+			return errorResponse(err), err
 		}
 
 		// Change day to the next day
 		dataPayload.WeekDays = incrementWeekDays(data.WeekDays)
 
 		// Create second schedule at end time
-		err = createSchedule(ctx, scheduler_client, dataPayload, data.EndTime, "wakeUp")
+		err = createSchedule(ctx, scheduler_client, dataPayload, data.WeekDays, data.EndTime, "wakeUp")
 		if err != nil {
-			return "", err
+			return errorResponse(err), err
 		}
 	} else {
 
-		dataPayload.EndTime = data.EndTime
-
 		// For other categories, create a single schedule
-		err := createSchedule(ctx, scheduler_client, dataPayload, data.StartTime, data.Category)
+		err := createSchedule(ctx, scheduler_client, dataPayload, data.WeekDays, data.StartTime, data.Category)
 		if err != nil {
-			return "", err
+			return errorResponse(err), err
 		}
 	}
 
-	return "Success", nil
+	return Response{
+		IsBase64Encoded: false,
+		StatusCode:      200,
+		Body:            "Success",
+	}, nil
 }
 
-func createSchedule(ctx context.Context, scheduler_client *scheduler.Client, data Schedule, time string, lambdaCategory string) error {
+func createSchedule(ctx context.Context, scheduler_client *scheduler.Client, data Schedule, weekDays []int, time string, lambdaCategory string) error {
 	ScheduleDescription := fmt.Sprintf("Sheduled event (%s) for %s", data.Category, data.UserName)
 
 	// Target Lambda
@@ -194,9 +223,11 @@ func createSchedule(ctx context.Context, scheduler_client *scheduler.Client, dat
 		LambdaArn = aws.String("arn:aws:lambda:us-east-1:354767308165:function:CreateClassReminder")
 		log.Println("Assigning class lambda")
 	case "sleep":
-		return fmt.Errorf("Sleep lambda not implemented yet")
+		LambdaArn = aws.String("arn:aws:lambda:us-east-1:354767308165:function:CreateSleepReminder")
+		log.Println("Assigning sleep lambda")
 	case "wakeUp":
-		return fmt.Errorf("Wake up lambda not implemented yet")
+		LambdaArn = aws.String("arn:aws:lambda:us-east-1:354767308165:function:CreateSleepReminder")
+		log.Println("Assigning wakeUp lambda")
 	case "study":
 		return fmt.Errorf("Study lambda not implemented yet")
 	}
@@ -213,16 +244,17 @@ func createSchedule(ctx context.Context, scheduler_client *scheduler.Client, dat
 		Input:   aws.String(string(payload)),
 	}
 
-	week_days := formatWeekDays(data.WeekDays)
+	week_days := formatWeekDays(weekDays)
 
 	start_time_split := strings.Split(data.StartTime, ":")
 	start_hour := start_time_split[0]
 	start_minute := start_time_split[1]
 
 	ScheduleExpression := fmt.Sprintf("cron(%s %s ? * %s *)", start_minute, start_hour, week_days)
+	log.Println("Schedule Expression: ", ScheduleExpression)
 
 	// Unique Identifier
-	ScheduleName := aws.String(data.UserName + "_" + data.UserPhone + "_" + data.Category + "_" + ScheduleExpression)
+	ScheduleName := aws.String(strings.ReplaceAll(data.UserName, " ", "_") + "_" + data.UserPhone + "_" + lambdaCategory + "_" + start_minute + "_" + start_hour + "_" + strings.ReplaceAll(week_days, ",", "_") + "_" + strings.ReplaceAll(data.EndTime, ":", "_"))
 
 	ScheduleInput := &scheduler.CreateScheduleInput{
 		FlexibleTimeWindow: &types.FlexibleTimeWindow{

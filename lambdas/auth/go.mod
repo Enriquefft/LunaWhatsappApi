@@ -3,11 +3,11 @@ module github.com/Enriquefft/LunaWhatsappApi/lambdas/auth
 go 1.21.0
 
 require (
-	github.com/aws/aws-lambda-go v1.41.0
 	github.com/aws/aws-sdk-go-v2 v1.20.1
 	github.com/aws/aws-sdk-go-v2/config v1.18.33
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.38.2
 	github.com/lib/pq v1.10.9
+	github.com/mdp/qrterminal/v3 v3.1.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20230809185103-1bdbbb5766d3
 )
@@ -34,4 +34,5 @@ require (
 	go.mau.fi/util v0.0.0-20230805154123-3981666a86f1 // indirect
 	golang.org/x/crypto v0.8.0 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )

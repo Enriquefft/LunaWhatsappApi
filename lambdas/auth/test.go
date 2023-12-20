@@ -3,12 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"log"
 	"os"
-	// "os/signal"
-	// "syscall"
-	// "time"
+	"time"
+
+	"github.com/mdp/qrterminal/v3"
 
 	"github.com/skip2/go-qrcode"
 
@@ -27,6 +27,10 @@ import (
 // No parameters
 type MyEvent struct{}
 
+func revokeSession() bool {
+	return true
+}
+
 func getS3Client() (*s3.Client, error) {
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion("us-east-1"),
@@ -44,7 +48,7 @@ func getWhatsappClient() (*whatsmeow.Client, error) {
 	if db_host == "" || db_password == "" {
 		log.Println("WHATSAPP_DATABASE_HOST: " + db_host)
 		log.Println("WHATSAPP_DATABASE_PASSWORD: " + db_password)
-		return nil, fmt.Errorf("Environment variables not set")
+		return nil, errors.New("Environment variables not set")
 	}
 
 	// Database connection
@@ -55,12 +59,14 @@ func getWhatsappClient() (*whatsmeow.Client, error) {
 
 	if container_err != nil {
 		log.Println("Error connecting to database")
+		log.Println(container_err)
 		return nil, container_err
 	}
 
 	deviceStore, device_err := container.GetFirstDevice()
 	if device_err != nil {
 		log.Println("Error getting first device")
+		log.Println(device_err)
 		return nil, device_err
 	}
 
@@ -69,6 +75,18 @@ func getWhatsappClient() (*whatsmeow.Client, error) {
 	whatsapp_client := whatsmeow.NewClient(deviceStore, clientLog)
 
 	return whatsapp_client, nil
+}
+
+func storeHasSession(client *whatsmeow.Client) bool {
+	return client.Store.ID != nil
+}
+
+func eventHandler(evt interface{}) {
+	log.Println("Event handler")
+}
+
+func sleep(seconds int) {
+	time.Sleep(time.Duration(seconds) * time.Second)
 }
 
 func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
@@ -86,8 +104,18 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 		log.Println("Got an error retrieving the whatsapp client")
 		return "", whatsapp_err
 	}
+	log.Println("Whatsapp client retrieved")
 
-	if whatsapp_client.Store.ID == nil {
+	if revokeSession() {
+		log.Println("Revoking session")
+		whatsapp_client.Store.Delete()
+	}
+
+	store_has_session := storeHasSession(whatsapp_client)
+
+	if !store_has_session {
+
+		log.Println("No ID stored, new login")
 
 		// No ID stored, new login
 		qrChan, _ := whatsapp_client.GetQRChannel(context.Background())
@@ -96,13 +124,16 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 			log.Println("Error connecting to whatsapp client")
 			return "", connection_err
 		}
-		defer whatsapp_client.Disconnect()
+		// defer fmt.Println("Disconnecting from wsp client")
+		// defer whatsapp_client.Disconnect()
 
 		for evt := range qrChan {
 			if evt.Event == "code" {
 
 				// Generating new code
 				log.Println("Generating new code")
+
+				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 
 				// Generate the QR code as png
 				var png []byte
@@ -114,7 +145,7 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 
 				// Replace the QR code in S3
 				input := &s3.PutObjectInput{
-					Bucket: aws.String("luna-admin-bucket"),
+					Bucket: aws.String("luna-auth-bucket"),
 					Key:    aws.String("WhatsAppQRCode.png"),
 					Body:   bytes.NewReader(png),
 				}
@@ -130,7 +161,6 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 
 			} else {
 				log.Println("Login event: " + evt.Event)
-				return "", fmt.Errorf("Login event: " + evt.Event)
 			}
 		}
 	} else {
@@ -145,13 +175,17 @@ func HandleRequest(ctx context.Context, name MyEvent) (string, error) {
 		return "Already logged in", nil
 	}
 
+	sleep(5)
+
+	// whatsapp_client.Disconnect()
 	return "Success", nil
 }
 
 func main() {
-	ans, err := HandleRequest(context.TODO(), MyEvent{})
-	log.Println(ans)
-	log.Println(err)
-
-	// lambda.Start(HandleRequest)
+	res, err := HandleRequest(context.TODO(), MyEvent{})
+	if err != nil {
+		log.Println(err)
+	} else {
+		log.Println(res)
+	}
 }
