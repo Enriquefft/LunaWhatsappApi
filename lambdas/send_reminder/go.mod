@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-lambda-go v1.41.0
 	github.com/lib/pq v1.10.9
 	go.mau.fi/whatsmeow v0.0.0-20230809185103-1bdbbb5766d3
-	google.golang.org/protobuf v1.30.0
+	google.golang.org/protobuf v1.33.0
 )
 
 require (
